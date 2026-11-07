@@ -1,0 +1,16 @@
+# Віртуальне середовище
+.venv/
+
+# Кеш Python
+__pycache__/
+
+# Датасети (великі, створюються скриптом prepare_dataset.py)
+datasets/
+
+# Результати навчання Ultralytics
+runs/
+
+# Файли ваг (*.pt) у корені проєкту, напр. yolo26n.pt
+/*.pt
+# ...але ваги з папки weights/ комітимо
+!weights/best.pt

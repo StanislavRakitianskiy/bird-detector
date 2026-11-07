@@ -1,0 +1,12 @@
+# Прямі залежності проєкту. Версії взято з .venv (Python 3.14).
+ultralytics==8.4.203
+torch==2.14.1
+torchvision==0.29.1
+opencv-python==5.0.0.93
+numpy==2.5.4
+requests==2.34.2
+tqdm==4.70.1
+
+# ВАЖЛИВО про torch/torchvision: у .venv стоять збірки з CUDA 12.6 (2.14.1+cu126 і 0.29.1+cu126).
+# Зі звичайного PyPI на Windows зазвичай ставиться CPU-збірка. Щоб отримати GPU-версію:
+#   pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu126
