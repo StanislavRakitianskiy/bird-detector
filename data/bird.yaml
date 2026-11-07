@@ -1,0 +1,8 @@
+# Конфіг датасету для Ultralytics. Генерується скриптом prepare_dataset.py.
+# path — відносно кореня проєкту. Ultralytics сам цього не розуміє (рахує від свого datasets_dir),
+# тому train.py перед запуском підставляє сюди абсолютний шлях.
+path: datasets/birds
+train: images/train
+val: images/val
+names:
+  0: bird
