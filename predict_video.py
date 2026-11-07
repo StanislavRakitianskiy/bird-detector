@@ -2,7 +2,8 @@
 
 Що робить скрипт:
 1. Відкриває вхідне відео і бере з нього FPS, ширину й висоту.
-2. Запускає модель на КОЖНОМУ кадрі (без пропусків).
+2. Запускає модель на КОЖНОМУ кадрі (без пропусків) і прибирає рамки-дублікати
+   «рамка всередині рамки» (напр. тіло птаха всередині рамки «птах разом з довгим хвостом»).
 3. Малює рамки, назву класу і confidence, а в кутку кадру — рядок стану.
 4. Записує кадри у вихідне відео (H.264, якщо доступний, інакше mp4v)
    і зберігає кілька кадрів з птахами як jpg — для README.
@@ -61,6 +62,10 @@ def parse_args() -> argparse.Namespace:
                         help="ваги моделі, за замовчуванням weights/best.pt; для порівняння можна yolo26n.pt")
     parser.add_argument("--conf", type=float, default=0.25,
                         help="мінімальна впевненість (0..1], слабші детекції відкидаються, за замовчуванням 0.25")
+    parser.add_argument("--nested", type=float, default=0.8,
+                        help="прибрати рамку як дублікат, якщо така частка її площі лежить усередині "
+                             "впевненішої рамки (напр. тіло птаха всередині рамки «птах з хвостом»); "
+                             "0 — не прибирати, за замовчуванням 0.8")
     parser.add_argument("--imgsz", type=int, default=640,
                         help="розмір, до якого модель зменшує кадр перед обробкою, за замовчуванням 640")
     parser.add_argument("--device", default=None,
@@ -76,6 +81,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("не вказано вхідне відео: додайте --input шлях/до/відео.mp4")
     if not 0 < args.conf <= 1:
         parser.error("--conf має бути в межах (0, 1]")
+    if not 0 <= args.nested <= 1:
+        parser.error("--nested має бути в межах [0, 1]")
     if args.imgsz < 32:
         parser.error("--imgsz має бути не менше 32")
     if args.save_frames < 0:
@@ -216,9 +223,39 @@ def detect(model: YOLO, frame: np.ndarray, args: argparse.Namespace, class_ids: 
     return results[0].boxes  # predict повертає список — по одному результату на кожну картинку
 
 
-def update_stats(stats: dict[str, Any], boxes: Boxes) -> None:
-    """Додає детекції поточного кадру до загальної статистики."""
+def nested_share(a: list[float], b: list[float]) -> float:
+    """Яка частка МЕНШОЇ з двох рамок [x1, y1, x2, y2] лежить усередині іншої: 0 — не перетинаються, 1 — повністю."""
+    inter_w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    inter_h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return inter_w * inter_h / smaller if smaller > 0 else 0.0
+
+
+def remove_nested_boxes(boxes: Boxes, threshold: float) -> Boxes:
+    """Прибирає дублікати «рамка всередині рамки», лишаючи з кожної такої пари впевненішу рамку.
+
+    Навіщо: на птаха з довгим хвостом модель інколи дає дві рамки — «птах з хвостом» і «лише тіло».
+    Вбудований NMS їх не зливає: він дивиться на IoU (перетин / об'єднання), а в такої пари він
+    лише ~0.3–0.6, бо мала рамка вдвічі менша. Тому тут міряємо, яка частка меншої рамки
+    лежить усередині іншої. Окремий птах на фоні заходить у чужу рамку зазвичай не більше ніж на ~60%.
+    """
+    if threshold <= 0 or len(boxes) < 2:
+        return boxes
+    coords = boxes.xyxy.tolist()
+    confs = boxes.conf.tolist()
+    order = sorted(range(len(coords)), key=lambda i: confs[i], reverse=True)  # від найвпевненішої
+    keep: list[int] = []
+    for i in order:
+        # all(...) — як keep.every(...) у JS: рамку лишаємо, якщо вона не «сидить» у жодній уже залишеній
+        if all(nested_share(coords[i], coords[j]) < threshold for j in keep):
+            keep.append(i)
+    return boxes[keep]
+
+
+def update_stats(stats: dict[str, Any], boxes: Boxes, removed: int) -> None:
+    """Додає детекції поточного кадру (і кількість прибраних дублікатів) до загальної статистики."""
     stats["frames"] += 1
+    stats["nested_removed"] += removed
     stats["detections"] += len(boxes)
     stats["frames_with_birds"] += int(len(boxes) > 0)
     stats["conf_sum"] += float(boxes.conf.sum())
@@ -248,7 +285,8 @@ def show_frame(frame: np.ndarray) -> bool:
 def process_video(model: YOLO, cap: cv2.VideoCapture, writer: cv2.VideoWriter, info: dict[str, Any],
                   args: argparse.Namespace, class_ids: list[int]) -> dict[str, Any]:
     """Головний цикл: читаємо кадр -> детекція -> малювання -> запис. Повертає статистику."""
-    stats = {"frames": 0, "detections": 0, "frames_with_birds": 0, "conf_sum": 0.0, "stopped": False}
+    stats = {"frames": 0, "detections": 0, "frames_with_birds": 0, "conf_sum": 0.0, "nested_removed": 0,
+             "stopped": False}
     gap = example_frame_gap(info["frames"], info["fps"], args.save_frames)
     examples: list[Path] = []
     next_example = 0  # номер кадру, з якого вже можна зберігати наступний приклад
@@ -262,8 +300,9 @@ def process_video(model: YOLO, cap: cv2.VideoCapture, writer: cv2.VideoWriter, i
             ok, frame = cap.read()  # frame — масив numpy (висота, ширина, 3) у порядку BGR
             if not ok:
                 break  # кадри закінчилися
-            boxes = detect(model, frame, args, class_ids)
-            update_stats(stats, boxes)
+            raw_boxes = detect(model, frame, args, class_ids)
+            boxes = remove_nested_boxes(raw_boxes, args.nested)
+            update_stats(stats, boxes, len(raw_boxes) - len(boxes))
             now = time.perf_counter()
             fps, last = smooth_fps(fps, now - last), now
             draw_detections(frame, boxes, model.names)
@@ -288,7 +327,7 @@ def log_summary(stats: dict[str, Any], info: dict[str, Any], output: Path, codec
     log.info("Оброблено кадрів: %d (за метаданими відео: %d)", frames, info["frames"])
     log.info("Середній FPS обробки: %.1f (пристрій %s; FPS самого відео: %.2f)",
              frames / stats["seconds"], device, info["fps"])
-    log.info("Усього детекцій: %d", detections)
+    log.info("Усього детекцій: %d (прибрано дублікатів «рамка в рамці»: %d)", detections, stats["nested_removed"])
     log.info("Кадрів з птахами: %d з %d (%.1f%%)",
              stats["frames_with_birds"], frames, 100 * stats["frames_with_birds"] / frames)
     if detections:
