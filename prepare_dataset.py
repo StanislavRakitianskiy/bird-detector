@@ -3,7 +3,8 @@
 Що робить скрипт:
 1. Качає архів розмітки COCO (один раз, кешує в datasets/_downloads/).
 2. Знаходить категорію "bird", відсікає зайві рамки (iscrowd, надто малі).
-3. Відбирає фото: train — випадкова вибірка, val — усі фото з птахами + трохи фото без птахів.
+3. Відбирає фото: val — усі фото з птахами з val2017, train — усі з train2017 (або випадкові --train-size),
+   до кожної частини — трохи фото без птахів.
 4. Качає фото по одному (багатопотоково) і пише YOLO-розмітку (.txt).
 5. Генерує data/bird.yaml, datasets/birds/stats.json і (за бажанням) картинки для перевірки.
 """
@@ -56,11 +57,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-h", "--help", action="help", help="показати цю довідку і вийти")
     parser.add_argument("--out", type=Path, default=Path("datasets/birds"),
                         help="папка датасету (відносно кореня проєкту), за замовчуванням datasets/birds")
-    parser.add_argument("--train-size", type=int, default=1500,
-                        help="скільки фото з птахами взяти в train, за замовчуванням 1500")
-    parser.add_argument("--neg-ratio", type=float, default=0.1,
+    # Значення за замовчуванням — ті, з якими готували датасет для weights/best.pt
+    parser.add_argument("--train-size", type=int, default=0,
+                        help="скільки фото з птахами взяти в train (випадкова вибірка); "
+                             "0 — усі (у train2017 їх 3236), за замовчуванням 0")
+    parser.add_argument("--neg-ratio", type=float, default=0.3,
                         help="частка фото БЕЗ птахів відносно кількості фото з птахами "
-                             "(в train і в val окремо), за замовчуванням 0.1")
+                             "(в train і в val окремо), за замовчуванням 0.3")
     parser.add_argument("--seed", type=int, default=42,
                         help="зерно генератора випадкових чисел, за замовчуванням 42")
     parser.add_argument("--workers", type=int, default=8,
@@ -69,8 +72,8 @@ def parse_args() -> argparse.Namespace:
                         help="зберегти N фото з намальованими рамками в <out>/preview/ "
                              "(рамки беруться з YOLO-файлів), за замовчуванням 0 — не робити")
     args = parser.parse_args()
-    if args.train_size < 1:
-        parser.error("--train-size має бути не менше 1")
+    if args.train_size < 0:
+        parser.error("--train-size не може бути від'ємним (0 — усі фото з птахами)")
     if args.neg_ratio < 0:
         parser.error("--neg-ratio не може бути від'ємним")
     if args.workers < 1:
@@ -441,7 +444,8 @@ def main() -> None:
     # val відбираємо ПЕРШИМ: тоді він не залежить від --train-size,
     # і метрики з різними розмірами train порівнюються на одній і тій самій val.
     picked = {"val": pick_images(zip_path, "val", None, args.neg_ratio, rng)}
-    picked["train"] = pick_images(zip_path, "train", args.train_size, args.neg_ratio, rng)
+    train_size = args.train_size or None  # 0 -> None, тобто всі фото з птахами
+    picked["train"] = pick_images(zip_path, "train", train_size, args.neg_ratio, rng)
 
     stats = {}
     for split in SPLITS:

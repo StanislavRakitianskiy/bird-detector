@@ -6,7 +6,8 @@
 3. Копіює найкращі ваги в weights/best.pt, а графіки навчання — в examples/training/ (для README).
 4. Окремо перевіряє збережені ваги на val і пише метрики та параметри запуску в weights/metrics.json.
 
-Запуск без аргументів (`python train.py`) працює з усіма значеннями за замовчуванням.
+Без аргументів (`python train.py`) — етап 1 рецепту weights/best.pt: yolo26n.pt, до 100 епох, imgsz 640.
+Етап 2 (дотренування на imgsz 960) — окрема команда, див. README.
 """
 
 import argparse
@@ -53,8 +54,8 @@ def parse_args() -> argparse.Namespace:
                         help="конфіг датасету (відносно кореня проєкту), за замовчуванням data/bird.yaml")
     parser.add_argument("--model", default="yolo26n.pt",
                         help="стартові ваги, за замовчуванням yolo26n.pt (шукаємо в корені проєкту)")
-    parser.add_argument("--epochs", type=int, default=50,
-                        help="максимальна кількість епох, за замовчуванням 50")
+    parser.add_argument("--epochs", type=int, default=100,
+                        help="максимальна кількість епох, за замовчуванням 100")
     parser.add_argument("--imgsz", type=int, default=640,
                         help="розмір картинки при навчанні, за замовчуванням 640")
     parser.add_argument("--batch", type=int, default=8,

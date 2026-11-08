@@ -21,8 +21,8 @@ from ultralytics import YOLO
 from ultralytics.utils import YAML
 
 # Беремо готові функції з інших скриптів проєкту, щоб не дублювати код
-from predict_video import TARGET_CLASS, pick_imgsz
-from train import PROJECT_ROOT, RUNS_DIR, resolve_data_yaml
+from predict_video import TARGET_CLASS, load_weights, pick_imgsz
+from train import RUNS_DIR, resolve_data_yaml
 
 log = logging.getLogger("evaluate")
 
@@ -73,20 +73,6 @@ def parse_args() -> argparse.Namespace:
 
 
 # --------------------------------------------------------------------------- модель і датасет
-
-def load_model(weights: Path) -> YOLO:
-    """Завантажує ваги за шляхом від кореня проєкту; якщо файлу немає — віддає назву Ultralytics.
-
-    Ultralytics сам завантажує з інтернету лише свої готові ваги (напр. yolo26n.pt),
-    тому для шляху з папкою, якого немає на диску, одразу зупиняємось з помилкою.
-    """
-    local = PROJECT_ROOT / weights  # якщо шлях абсолютний, Path поверне саме його
-    if local.is_file():
-        return YOLO(str(local))
-    if weights.parent != Path("."):
-        raise SystemExit(f"Файл ваг не знайдено: {local}")
-    return YOLO(str(weights))
-
 
 def find_bird_id(model: YOLO, weights: Path) -> int:
     """Шукає id класу bird у моделі за назвою (у нашій моделі це 0, у готовій yolo26n.pt — 14)."""
@@ -154,7 +140,7 @@ def validate(model: YOLO, data: Path, imgsz: int, bird_id: int, args: argparse.N
 
 def evaluate_weights(weights: Path, data_path: Path, args: argparse.Namespace) -> list[dict[str, Any]]:
     """Перевіряє одні ваги на всіх потрібних розмірах. Повертає рядки таблиці."""
-    model = load_model(weights)
+    model = load_weights(weights)  # та сама функція, що й у predict_video.py
     bird_id = find_bird_id(model, weights)
     data = data_for_model(data_path, model.names, bird_id)
     rows = []

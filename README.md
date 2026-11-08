@@ -36,8 +36,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu126
 python -m pip install -r requirements.txt
-python prepare_dataset.py --train-size 5000 --neg-ratio 0.3
-python train.py --epochs 100 --out-dir runs/v4 --plots-dir runs/v4/plots
+python prepare_dataset.py
+python train.py --out-dir runs/v4 --plots-dir runs/v4/plots
 python train.py --model runs/v4/best.pt --epochs 30 --imgsz 960 --batch 4
 python evaluate.py --weights yolo26n.pt runs/v4/best.pt weights/best.pt --imgsz 640 960
 python predict_video.py --input examples/input.mp4 --output examples/output.mp4
@@ -52,8 +52,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install torch==2.14.1 torchvision==0.29.1
 python -m pip install -r requirements.txt
-python prepare_dataset.py --train-size 5000 --neg-ratio 0.3
-python train.py --epochs 100 --out-dir runs/v4 --plots-dir runs/v4/plots
+python prepare_dataset.py
+python train.py --out-dir runs/v4 --plots-dir runs/v4/plots
 python train.py --model runs/v4/best.pt --epochs 30 --imgsz 960 --batch 4
 python evaluate.py --weights yolo26n.pt runs/v4/best.pt weights/best.pt --imgsz 640 960
 python predict_video.py --input examples/input.mp4 --output examples/output.mp4
@@ -129,26 +129,24 @@ python -m pip install -r requirements.txt
 
 ## Підготовка датасету
 
-Конфігурація, на якій навчено `weights/best.pt`:
-
 ```bash
-python prepare_dataset.py --train-size 5000 --neg-ratio 0.3
+python prepare_dataset.py
 ```
+
+Значення за замовчуванням — саме ті, з якими готували датасет для `weights/best.pt`: усі фото з птахами з train2017 і `--neg-ratio 0.3`.
 
 Що завантажується:
 
 - архів розмітки COCO `annotations_trainval2017.zip` — 252 907 541 байт (~253 МБ), один раз, зберігається в `datasets/_downloads/`;
-- фото — по одному з `images.cocodataset.org`. З параметрами вище: 4207 фото train (~711 МБ) і 163 фото val (~29 МБ).
+- фото — по одному з `images.cocodataset.org`. Зі значеннями за замовчуванням: 4207 фото train (~711 МБ) і 163 фото val (~29 МБ).
 
 Читання JSON-розмітки COCO займає до хвилини і кілька ГБ оперативної пам'яті. Повторний запуск не качає вже завантажені фото, а файли зі старих запусків (з іншим `--train-size`) видаляє.
-
-`--train-size 5000` більше, ніж є фото з птахами в train2017 після фільтрів, тому скрипт попереджає і бере всі — вийшло 3236.
 
 | Аргумент | За замовчуванням | Що робить |
 |---|---|---|
 | `--out` | `datasets/birds` | папка датасету (відносно кореня проєкту) |
-| `--train-size` | `1500` | скільки фото з птахами взяти в train |
-| `--neg-ratio` | `0.1` | частка фото без птахів відносно фото з птахами (в train і в val окремо) |
+| `--train-size` | `0` | скільки фото з птахами взяти в train (випадкова вибірка); `0` — усі (у train2017 їх 3236 після фільтрів) |
+| `--neg-ratio` | `0.3` | частка фото без птахів відносно фото з птахами (в train і в val окремо) |
 | `--seed` | `42` | зерно генератора випадкових чисел |
 | `--workers` | `8` | кількість потоків для завантаження фото |
 | `--preview` | `0` | зберегти N фото з намальованими рамками в `<out>/preview/` для перевірки конвертації |
@@ -161,6 +159,8 @@ python prepare_dataset.py --train-size 5000 --neg-ratio 0.3
 python train.py
 ```
 
+Без аргументів — це етап 1 рецепту `weights/best.pt` (див. нижче). Результат перезаписує `weights/best.pt`, `weights/metrics.json` і графіки в `examples/training/`.
+
 Скрипт:
 
 1. перевіряє датасет і робить копію `data/bird.yaml` з абсолютним шляхом у `runs/bird_abs.yaml`;
@@ -172,7 +172,7 @@ python train.py
 |---|---|---|
 | `--data` | `data/bird.yaml` | конфіг датасету |
 | `--model` | `yolo26n.pt` | стартові ваги (шлях від кореня проєкту; якщо файлу немає — Ultralytics завантажить сам) |
-| `--epochs` | `50` | максимальна кількість епох |
+| `--epochs` | `100` | максимальна кількість епох |
 | `--imgsz` | `640` | розмір картинки при навчанні |
 | `--batch` | `8` | розмір батча |
 | `--device` | авто | `0` (перший GPU), `mps` або `cpu`; авто: cuda → mps → cpu |
@@ -185,14 +185,14 @@ python train.py
 | `--out-dir` | `weights` | куди покласти `best.pt` і `metrics.json` |
 | `--plots-dir` | `examples/training` | куди скопіювати графіки навчання |
 
-`weights/best.pt` отримано у два етапи (датасет `--train-size 5000 --neg-ratio 0.3`):
+`weights/best.pt` отримано у два етапи (датасет — `python prepare_dataset.py` зі значеннями за замовчуванням):
 
 ```bash
-python train.py --epochs 100 --out-dir runs/v4 --plots-dir runs/v4/plots
+python train.py --out-dir runs/v4 --plots-dir runs/v4/plots
 python train.py --model runs/v4/best.pt --epochs 30 --imgsz 960 --batch 4
 ```
 
-Перший етап донавчає `yolo26n.pt` на `imgsz 640` і кладе результат у `runs/v4/`. Другий дотреновує його на `imgsz 960` і пише в `weights/`.
+Перший етап — це `python train.py` зі значеннями за замовчуванням: донавчає `yolo26n.pt` на `imgsz 640`. `--out-dir` і `--plots-dir` лише кладуть його результат у `runs/v4/`, щоб не перезаписати `weights/`. Другий дотреновує його на `imgsz 960` і пише в `weights/`.
 
 Якщо не вистачає відеопам'яті — спершу зменшуйте `--batch` (4, 2), потім `--imgsz` (наприклад, 512).
 
@@ -204,7 +204,7 @@ python train.py --model runs/v4/best.pt --epochs 30 --imgsz 960 --batch 4
 python train.py --epochs 1 --fraction 0.1 --name smoke --out-dir runs/smoke_out --plots-dir runs/smoke_out/plots
 ```
 
-На GTX 1650 Ti (датасет за замовчуванням) навчання зайняло 31 с. Метрики після однієї епохи близькі до нуля — це нормально.
+На GTX 1650 Ti (датасет за замовчуванням) навчання зайняло 1 хв 11 с. Метрики після однієї епохи близькі до нуля — це нормально.
 
 ### Google Colab
 
@@ -214,8 +214,8 @@ python train.py --epochs 1 --fraction 0.1 --name smoke --out-dir runs/smoke_out 
 !git clone https://github.com/StanislavRakitianskiy/bird-detector.git
 %cd bird-detector
 !pip install -r requirements.txt
-!python prepare_dataset.py --train-size 5000 --neg-ratio 0.3
-!python train.py --epochs 100 --out-dir runs/v4 --plots-dir runs/v4/plots
+!python prepare_dataset.py
+!python train.py --out-dir runs/v4 --plots-dir runs/v4/plots
 !python train.py --model runs/v4/best.pt --epochs 30 --imgsz 960 --batch 4
 ```
 
@@ -246,13 +246,15 @@ python evaluate.py --weights yolo26n.pt runs/v4/best.pt weights/best.pt --imgsz 
 python predict_video.py --input examples/input.mp4 --output examples/output.mp4
 ```
 
-Модель обробляє кожен кадр, малює рамки з підписом `bird 0.87` і рядок стану (номер кадру, кількість птахів, FPS обробки). Поруч з вихідним відео зберігаються кадри-приклади `<output>_1.jpg`, `<output>_2.jpg`, ... Відео пишеться кодеком H.264 (`avc1`), а якщо він недоступний — `mp4v`.
+Модель обробляє кожен кадр, малює рамки з підписом `bird 0.87` і рядок стану (номер кадру, кількість птахів, FPS обробки). Поруч з вихідним відео зберігаються кадри-приклади `<output>_1.jpg`, `<output>_2.jpg`, ... Кадри-приклади з минулого запуску з тим самим `--output` перед цим видаляються. Відео пишеться кодеком H.264 (`avc1`), а якщо він недоступний — `mp4v`. На Windows H.264 є, а на Linux і macOS у `opencv-python` з pip його може не бути: тоді відео запишеться в `mp4v`, який браузери не відкривають — дивіться його у VLC.
+
+Шляхи `--input`, `--output` і `--weights` рахуються від кореня проєкту (як і в інших скриптах), тому команди працюють з будь-якої папки.
 
 | Аргумент | За замовчуванням | Що робить |
 |---|---|---|
 | `--input` | — (обов'язковий) | вхідне відео |
 | `--output` | `examples/output.mp4` | куди зберегти відео з рамками |
-| `--weights` | `weights/best.pt` | ваги моделі; для порівняння можна `yolo26n.pt` |
+| `--weights` | `weights/best.pt` | ваги моделі; для порівняння можна `yolo26n.pt` — якщо файлу немає, Ultralytics завантажить його сам |
 | `--conf` | `0.25` | мінімальна впевненість (0..1], слабші детекції відкидаються |
 | `--nested` | `0.8` | прибрати рамку, якщо така частка її площі лежить усередині впевненішої рамки; `0` — не прибирати |
 | `--imgsz` | з ваг | розмір, до якого модель зменшує кадр; за замовчуванням — той, на якому навчали ваги (у `weights/best.pt` — 960), а якщо він невідомий — 640 |
@@ -279,7 +281,7 @@ python predict_video.py --input examples/input.mp4 --output examples/output.mp4 
 
 **Ліцензія** ([COCO Terms of Use](https://cocodataset.org/#termsofuse)): розмітка належить COCO Consortium і поширюється за ліцензією [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/). Авторських прав на фото COCO Consortium не має — їх використання підпорядковується умовам Flickr. Тому фото в репозиторій не додано: `prepare_dataset.py` завантажує їх сам.
 
-**Розмір** (`datasets/birds/stats.json`, `--train-size 5000 --neg-ratio 0.3 --seed 42`):
+**Розмір** (`datasets/birds/stats.json`, значення за замовчуванням: усі фото з птахами, `--neg-ratio 0.3`, `--seed 42`):
 
 | | train (з train2017) | val (з val2017) |
 |---|---|---|
@@ -373,9 +375,9 @@ IoU — площа перетину двох рамок, поділена на �
 
 | Версія | Що змінено | Train: фото з птахами / без | Епох пройдено / найкраща | Час | Precision | Recall | mAP50 | mAP50-95 |
 |---|---|---|---|---|---|---|---|---|
-| v1 | старт: `yolo26n.pt`, усі аргументи за замовчуванням (`--epochs 50`, датасет `--train-size 1500 --neg-ratio 0.1`) | 1500 / 150 | 50 / 50 | 0:48:20 | 0.7546 | 0.4476 | 0.5390 | 0.3436 |
+| v1 | старт: `yolo26n.pt`, `--epochs 50`, датасет `--train-size 1500 --neg-ratio 0.1` (тодішні значення за замовчуванням) | 1500 / 150 | 50 / 50 | 0:48:20 | 0.7546 | 0.4476 | 0.5390 | 0.3436 |
 | v2 | `--epochs 100` | 1500 / 150 | 80 / 65 | 1:19:02 | 0.7451 | 0.4500 | 0.5408 | 0.3258 |
-| v3 | `--train-size 5000` | 3236 / 324 | 63 / 48 | 2:10:50 | 0.7899 | 0.4475 | 0.5557 | 0.3505 |
+| v3 | `--train-size 5000`, тобто всі фото з птахами (тепер так за замовчуванням: `--train-size 0`) | 3236 / 324 | 63 / 48 | 2:10:50 | 0.7899 | 0.4475 | 0.5557 | 0.3505 |
 | v4 | `--neg-ratio 0.3` | 3236 / 971 | 87 / 72 | 3:25:27 | 0.7619 | 0.4643 | 0.5653 | 0.3549 |
 | **v5** (`weights/`) | дотренування v4: `--model runs/v4/best.pt --epochs 30 --imgsz 960 --batch 4` | 3236 / 971 | 30 / 30 | 2:55:51 | 0.7488 | 0.4896 | 0.5857 | 0.3717 |
 

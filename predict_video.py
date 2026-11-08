@@ -10,6 +10,9 @@
 4. Записує кадри у вихідне відео (H.264, якщо доступний, інакше mp4v)
    і зберігає кілька кадрів з птахами як jpg — для README.
 
+Шляхи (--input, --output, --weights) рахуються від кореня проєкту, як і в інших скриптах,
+тому скрипт можна запускати з будь-якої папки.
+
 Приклад: python predict_video.py --input examples/input.mp4
 """
 
@@ -28,10 +31,11 @@ from ultralytics.engine.results import Boxes
 
 log = logging.getLogger("predict_video")
 
+PROJECT_ROOT = Path(__file__).resolve().parent
 TARGET_CLASS = "bird"  # показуємо лише цей клас (важливо для готової yolo26n.pt, де 80 класів)
 DEFAULT_FPS = 25.0  # якщо відео не повідомляє свій FPS
 DEFAULT_IMGSZ = 640  # якщо у вагах не записано, на якому розмірі їх навчали
-CODECS = ("avc1", "mp4v")  # avc1 = H.264 (відкривається в браузері й на GitHub), mp4v — запасний
+CODECS = ("avc1", "mp4v")  # avc1 = H.264 (відкривають браузери й плеєри), mp4v — запасний (браузери не відкривають)
 WINDOW_NAME = "bird detector"  # латиницею: вікна OpenCV на Windows не показують кирилицю
 FONT = cv2.FONT_HERSHEY_SIMPLEX  # вбудований шрифт OpenCV — лише латиниця, тому підписи англійською
 # Кольори в OpenCV задаються в порядку BGR (синій, зелений, червоний), а не RGB
@@ -58,11 +62,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("-h", "--help", action="help", help="показати цю довідку і вийти")
     parser.add_argument("--input", type=Path, default=None,
-                        help="вхідне відео (ОБОВ'ЯЗКОВО), напр. examples/input.mp4")
+                        help="вхідне відео (ОБОВ'ЯЗКОВО; відносно кореня проєкту), напр. examples/input.mp4")
     parser.add_argument("--output", type=Path, default=Path("examples/output.mp4"),
-                        help="куди зберегти відео з рамками (.mp4), за замовчуванням examples/output.mp4")
+                        help="куди зберегти відео з рамками (.mp4, відносно кореня проєкту), "
+                             "за замовчуванням examples/output.mp4")
     parser.add_argument("--weights", type=Path, default=Path("weights/best.pt"),
-                        help="ваги моделі, за замовчуванням weights/best.pt; для порівняння можна yolo26n.pt")
+                        help="ваги моделі (відносно кореня проєкту), за замовчуванням weights/best.pt; "
+                             "для порівняння можна yolo26n.pt — якщо файлу немає, Ultralytics завантажить сам")
     parser.add_argument("--conf", type=float, default=0.25,
                         help="мінімальна впевненість (0..1], слабші детекції відкидаються, за замовчуванням 0.25")
     parser.add_argument("--nested", type=float, default=0.8,
@@ -103,19 +109,30 @@ def parse_args() -> argparse.Namespace:
 # --------------------------------------------------------------------------- перевірки і модель
 
 def check_paths(args: argparse.Namespace) -> None:
-    """Перевіряє вхідне відео і ваги ще до завантаження моделі."""
+    """Перевіряє вхідне відео ще до завантаження моделі. Шляхи вже мають бути від кореня проєкту."""
     if not args.input.is_file():
         raise SystemExit(f"Вхідне відео не знайдено: {args.input}")
-    if not args.weights.is_file():
-        raise SystemExit(f"Файл ваг не знайдено: {args.weights}. Спочатку навчіть модель (python train.py) "
-                         "або вкажіть інші ваги, напр. --weights yolo26n.pt")
     if args.output.resolve() == args.input.resolve():
         raise SystemExit("--output не може збігатися з --input: вхідне відео буде перезаписане")
 
 
+def load_weights(weights: Path) -> YOLO:
+    """Завантажує ваги за шляхом від кореня проєкту (абсолютний шлях теж підходить).
+
+    Якщо файлу немає, Ultralytics сам завантажує з інтернету свої готові ваги (напр. yolo26n.pt) —
+    саме за цим шляхом, тобто в корінь проєкту. Інших файлів він не знає і кидає FileNotFoundError.
+    """
+    path = PROJECT_ROOT / weights  # якщо weights абсолютний, Path поверне саме його
+    try:
+        return YOLO(str(path))
+    except FileNotFoundError:
+        raise SystemExit(f"Файл ваг не знайдено: {path}. Спочатку навчіть модель (python train.py) "
+                         "або вкажіть інші ваги, напр. --weights yolo26n.pt") from None
+
+
 def load_model(weights: Path) -> tuple[YOLO, list[int]]:
     """Завантажує модель (один раз) і знаходить id класу bird за назвою в model.names."""
-    model = YOLO(str(weights))
+    model = load_weights(weights)
     class_ids = [cls_id for cls_id, name in model.names.items() if name == TARGET_CLASS]
     if not class_ids:
         raise SystemExit(f"У моделі {weights} немає класу '{TARGET_CLASS}'. Її класи: {list(model.names.values())}")
@@ -178,6 +195,8 @@ def create_writer(path: Path, fps: float, size: tuple[int, int]) -> tuple[cv2.Vi
         writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*codec), fps, size)
         if writer.isOpened():
             log.info("Вихідне відео пишеться кодеком %s (через %s)", codec, writer.getBackendName())
+            if codec == "mp4v":
+                log.warning("Кодек mp4v: браузер таке відео, найімовірніше, не відкриє — дивіться його у VLC")
             return writer, codec
         writer.release()
         log.warning("Кодек %s недоступний, пробую наступний", codec)
@@ -214,6 +233,20 @@ def save_example_frame(frame: np.ndarray, output: Path, number: int, frame_no: i
     path.write_bytes(data.tobytes())
     log.info("Збережено кадр-приклад: %s (кадр %d)", path, frame_no)
     return path
+
+
+def remove_old_examples(output: Path) -> None:
+    """Видаляє кадри-приклади <output>_<N>.jpg з минулого запуску.
+
+    Інакше, якщо цього разу збережеться менше кадрів, старі лишаться й виглядатимуть як нові.
+    """
+    prefix = f"{output.stem}_"
+    old = [path for path in output.parent.glob("*.jpg")
+           if path.stem.startswith(prefix) and path.stem[len(prefix):].isdigit()]
+    for path in old:
+        path.unlink()
+    if old:
+        log.info("Видалено старих кадрів-прикладів: %d", len(old))
 
 
 # --------------------------------------------------------------------------- малювання
@@ -301,7 +334,7 @@ def remove_nested_boxes(boxes: Boxes, threshold: float) -> Boxes:
     order = sorted(range(len(coords)), key=lambda i: confs[i], reverse=True)  # від найвпевненішої
     keep: list[int] = []
     for i in order:
-        # all(...) — як keep.every(...) у JS: рамку лишаємо, якщо вона не «сидить» у жодній уже залишеній
+        # рамку лишаємо, якщо вона не «сидить» у жодній з уже залишених
         if all(nested_share(coords[i], coords[j]) < threshold for j in keep):
             keep.append(i)
     return boxes[keep]
@@ -401,6 +434,8 @@ def main() -> None:
     """Точка входу: перевірки -> модель -> відкриття відео -> обробка кожного кадру -> підсумок."""
     setup_logging()
     args = parse_args()
+    args.input = PROJECT_ROOT / args.input  # якщо шлях абсолютний, Path поверне саме його
+    args.output = PROJECT_ROOT / args.output
     check_paths(args)
     model, class_ids = load_model(args.weights)
     args.imgsz = pick_imgsz(args.imgsz, model)
@@ -411,6 +446,7 @@ def main() -> None:
     writer = None
     try:
         writer, codec = create_writer(args.output, info["fps"], out_size)
+        remove_old_examples(args.output)
         stats = process_video(model, cap, writer, info, args, class_ids, out_size)
     finally:
         cap.release()
