@@ -2,9 +2,11 @@
 
 Що робить скрипт:
 1. Відкриває вхідне відео і бере з нього FPS, ширину й висоту.
-2. Запускає модель на КОЖНОМУ кадрі (без пропусків) і прибирає рамки-дублікати
-   «рамка всередині рамки» (напр. тіло птаха всередині рамки «птах разом з довгим хвостом»).
-3. Малює рамки, назву класу і confidence, а в кутку кадру — рядок стану.
+2. Запускає модель на КОЖНОМУ кадрі (без пропусків) з тим imgsz, на якому навчали ваги,
+   і прибирає рамки-дублікати «рамка всередині рамки»
+   (напр. тіло птаха всередині рамки «птах разом з довгим хвостом»).
+3. Зменшує кадр до --max-side (інакше вихідне відео важить десятки МБ), малює рамки,
+   назву класу і confidence, а в кутку кадру — рядок стану.
 4. Записує кадри у вихідне відео (H.264, якщо доступний, інакше mp4v)
    і зберігає кілька кадрів з птахами як jpg — для README.
 
@@ -28,6 +30,7 @@ log = logging.getLogger("predict_video")
 
 TARGET_CLASS = "bird"  # показуємо лише цей клас (важливо для готової yolo26n.pt, де 80 класів)
 DEFAULT_FPS = 25.0  # якщо відео не повідомляє свій FPS
+DEFAULT_IMGSZ = 640  # якщо у вагах не записано, на якому розмірі їх навчали
 CODECS = ("avc1", "mp4v")  # avc1 = H.264 (відкривається в браузері й на GitHub), mp4v — запасний
 WINDOW_NAME = "bird detector"  # латиницею: вікна OpenCV на Windows не показують кирилицю
 FONT = cv2.FONT_HERSHEY_SIMPLEX  # вбудований шрифт OpenCV — лише латиниця, тому підписи англійською
@@ -66,8 +69,13 @@ def parse_args() -> argparse.Namespace:
                         help="прибрати рамку як дублікат, якщо така частка її площі лежить усередині "
                              "впевненішої рамки (напр. тіло птаха всередині рамки «птах з хвостом»); "
                              "0 — не прибирати, за замовчуванням 0.8")
-    parser.add_argument("--imgsz", type=int, default=640,
-                        help="розмір, до якого модель зменшує кадр перед обробкою, за замовчуванням 640")
+    parser.add_argument("--imgsz", type=int, default=None,
+                        help="розмір, до якого модель зменшує кадр перед обробкою; за замовчуванням — той, "
+                             "на якому навчали ваги (для weights/best.pt це 960), а якщо він невідомий — 640")
+    parser.add_argument("--max-side", type=int, default=1280,
+                        help="найбільша сторона вихідного відео в пікселях: більші кадри зменшуються, щоб файл "
+                             "був меншим (модель однаково бачить повний кадр); 0 — не зменшувати, "
+                             "за замовчуванням 1280")
     parser.add_argument("--device", default=None,
                         help="пристрій: 0 (перший GPU) або cpu; за замовчуванням вибирається автоматично")
     parser.add_argument("--show", action="store_true",
@@ -83,8 +91,10 @@ def parse_args() -> argparse.Namespace:
         parser.error("--conf має бути в межах (0, 1]")
     if not 0 <= args.nested <= 1:
         parser.error("--nested має бути в межах [0, 1]")
-    if args.imgsz < 32:
+    if args.imgsz is not None and args.imgsz < 32:
         parser.error("--imgsz має бути не менше 32")
+    if args.max_side != 0 and args.max_side < 32:
+        parser.error("--max-side має бути 0 (не зменшувати) або не менше 32")
     if args.save_frames < 0:
         parser.error("--save-frames не може бути від'ємним")
     return args
@@ -112,6 +122,29 @@ def load_model(weights: Path) -> tuple[YOLO, list[int]]:
     log.info("Модель: %s (класів: %d), показую лише '%s' (id %s)",
              weights, len(model.names), TARGET_CLASS, class_ids)
     return model, class_ids
+
+
+def imgsz_from_weights(model: YOLO) -> int | None:
+    """Розмір картинки, на якому навчали ваги (Ultralytics зберігає його в .pt); None — якщо невідомо."""
+    checkpoint = getattr(model, "ckpt", None) or {}
+    imgsz = (checkpoint.get("train_args") or {}).get("imgsz")
+    return imgsz if isinstance(imgsz, int) else None
+
+
+def pick_imgsz(requested: int | None, model: YOLO) -> int:
+    """Розмір обробки кадру: --imgsz, якщо його вказали, інакше розмір навчання з ваг, інакше DEFAULT_IMGSZ.
+
+    Навіщо: модель найкраще працює на тому розмірі, на якому її навчали. weights/best.pt навчено на 960,
+    і на 640 вона знаходить помітно менше дрібних птахів.
+    """
+    if requested is not None:
+        return requested
+    trained = imgsz_from_weights(model)
+    if trained is None:
+        log.warning("У вагах не записано розмір навчання — використовую imgsz %d", DEFAULT_IMGSZ)
+        return DEFAULT_IMGSZ
+    log.info("imgsz %d — як при навчанні цих ваг (змінити можна через --imgsz)", trained)
+    return trained
 
 
 # --------------------------------------------------------------------------- відео: читання і запис
@@ -149,6 +182,25 @@ def create_writer(path: Path, fps: float, size: tuple[int, int]) -> tuple[cv2.Vi
         writer.release()
         log.warning("Кодек %s недоступний, пробую наступний", codec)
     raise SystemExit(f"Не вдалося створити вихідне відео {path} жодним кодеком з {CODECS}")
+
+
+def output_size(width: int, height: int, max_side: int) -> tuple[int, int]:
+    """Розмір вихідного відео: пропорційно зменшений, щоб більша сторона була не більша за max_side.
+
+    Сторони округлюємо до парних — цього вимагає H.264. max_side=0 — розмір не змінюється.
+    Навіщо: кодек пише ~1 біт на піксель, тож 6 с відео 1080x1920 важать ~45 МБ, а 720x1280 — ~20 МБ.
+    """
+    if max_side == 0 or max(width, height) <= max_side:
+        return width, height
+    scale = max_side / max(width, height)
+    return round(width * scale / 2) * 2, round(height * scale / 2) * 2
+
+
+def resize_frame(frame: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Змінює розмір кадру на size = (ширина, висота); якщо розмір уже такий — повертає той самий кадр."""
+    if (frame.shape[1], frame.shape[0]) == size:
+        return frame
+    return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)  # INTER_AREA — найкраще для зменшення
 
 
 def save_example_frame(frame: np.ndarray, output: Path, number: int, frame_no: int) -> Path:
@@ -196,11 +248,14 @@ def draw_label(frame: np.ndarray, text: str, x: int, y: int,
                 font_thickness, cv2.LINE_AA)
 
 
-def draw_detections(frame: np.ndarray, boxes: Boxes, names: dict[int, str]) -> None:
-    """Малює рамки і підписи «bird 0.87» для всіх детекцій кадру (змінює frame на місці)."""
+def draw_detections(frame: np.ndarray, boxes: Boxes, names: dict[int, str], scale: float = 1.0) -> None:
+    """Малює рамки і підписи «bird 0.87» для всіх детекцій кадру (змінює frame на місці).
+
+    scale — у скільки разів frame менший за кадр, на якому шукали птахів (координати рамок множимо на нього).
+    """
     box_thickness, _, _ = drawing_sizes(frame)
     # .tolist() переносить дані з GPU і робить звичайні числа Python, які приймає cv2
-    coords = boxes.xyxy.int().tolist()
+    coords = (boxes.xyxy * scale).int().tolist()
     confs = boxes.conf.tolist()
     class_ids = boxes.cls.int().tolist()
     for (x1, y1, x2, y2), conf, cls_id in zip(coords, confs, class_ids):
@@ -283,8 +338,8 @@ def show_frame(frame: np.ndarray) -> bool:
 
 
 def process_video(model: YOLO, cap: cv2.VideoCapture, writer: cv2.VideoWriter, info: dict[str, Any],
-                  args: argparse.Namespace, class_ids: list[int]) -> dict[str, Any]:
-    """Головний цикл: читаємо кадр -> детекція -> малювання -> запис. Повертає статистику."""
+                  args: argparse.Namespace, class_ids: list[int], out_size: tuple[int, int]) -> dict[str, Any]:
+    """Головний цикл: читаємо кадр -> детекція -> зменшення -> малювання -> запис. Повертає статистику."""
     stats = {"frames": 0, "detections": 0, "frames_with_birds": 0, "conf_sum": 0.0, "nested_removed": 0,
              "stopped": False}
     gap = example_frame_gap(info["frames"], info["fps"], args.save_frames)
@@ -305,7 +360,10 @@ def process_video(model: YOLO, cap: cv2.VideoCapture, writer: cv2.VideoWriter, i
             update_stats(stats, boxes, len(raw_boxes) - len(boxes))
             now = time.perf_counter()
             fps, last = smooth_fps(fps, now - last), now
-            draw_detections(frame, boxes, model.names)
+            # птахів шукаємо на повному кадрі, а малюємо вже на зменшеному — так підписи чіткіші
+            scale = out_size[0] / frame.shape[1]
+            frame = resize_frame(frame, out_size)
+            draw_detections(frame, boxes, model.names, scale)
             draw_status(frame, stats["frames"], info["frames"], len(boxes), fps)
             writer.write(frame)
             progress.update(1)
@@ -345,11 +403,15 @@ def main() -> None:
     args = parse_args()
     check_paths(args)
     model, class_ids = load_model(args.weights)
+    args.imgsz = pick_imgsz(args.imgsz, model)
     cap, info = open_video(args.input)
+    out_size = output_size(info["width"], info["height"], args.max_side)
+    if out_size != (info["width"], info["height"]):
+        log.info("Вихідне відео: %dx%d (зменшено до --max-side %d)", *out_size, args.max_side)
     writer = None
     try:
-        writer, codec = create_writer(args.output, info["fps"], (info["width"], info["height"]))
-        stats = process_video(model, cap, writer, info, args, class_ids)
+        writer, codec = create_writer(args.output, info["fps"], out_size)
+        stats = process_video(model, cap, writer, info, args, class_ids, out_size)
     finally:
         cap.release()
         if writer is not None:
